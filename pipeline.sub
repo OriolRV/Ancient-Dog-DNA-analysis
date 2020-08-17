@@ -1,0 +1,304 @@
+#!/bin/bash -x
+#
+#SBATCH --job-name="Paleodog"
+#SBATCH --account=lbotigue_V6435
+#SBATCH --cpus-per-task=1
+#SBTACH --mem=50G
+#SBATCH --mail-type=END
+#SBATCH --mail-user=oriol.rocabert@cragenomica.es
+#
+
+#Both output and error option have been deleted from SLURM indications because they are already stated when calling this script, as well as variable $SAMPLE.
+
+################################################################################################################################################
+#This script performs the majority of the sequencing data analysis by performing some operations as well as calling other programs and scripts.#
+#For security, sections have been commented using the construct ": <<'END' section_to_comment END", and some exit commands.	      			   #
+################################################################################################################################################
+
+echo "##Running pipeline with sample" $SAMPLE"."
+
+#Some paths are set.
+HOME=/home/orocabert
+PROJECTS=/projects/124-dogs
+SCRATCH=/scratch/124-dogs
+REFGEN=$PROJECTS/CanFam3.1.fa
+
+#The indeces are retrieved and combined with the adapter sequences to form the complete adapters. In this case, the p5 index won't be attached.
+echo "##Starting sample index search."
+internal="AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+external="ATCTCGTAT"
+left="ACACTCTTTCCCTACACGACGCTCTTCCGATCT"
+p7in=$(grep $SAMPLE $HOME/supplementary_files/index_info.txt | cut -f4 -d',')
+p5in=$(grep $SAMPLE $HOME/supplementary_files/index_info.txt | cut -f7 -d',')
+a1=$(echo $internal$p7in$external)
+a2=$(echo $left)
+echo "p7 index: "$p7in "and p5 index: "$p5in
+echo "p7 adapter: " $a1 "and p5 adapter: " $a2
+echo "##Finished sample index search."
+
+#AdatperRemoval is called to trim the adaptors if they still remain in the sequence.
+echo "##Starting the removal of adapters."
+module load adapterremoval/2.3.1
+#The --file1 option recieves the input file, the --basename option sets the output file name, the --adapter1/2 options recieve the adapters,
+#the --trims and --trimqualities option remove N and stretches of low quality bases, and the -gzip option compresses the output.
+	AdapterRemoval --file1 $SCRATCH/merged/$SAMPLE".fastq.gz" --basename /$SCRATCH/adremoved/$SAMPLE"_adrm" --adapter1 $a1 --adapter2 $a2 --trimns --trimqualities --gzip
+module unload adapterremoval/2.3.1
+echo "##Finished the removal of adapters."
+
+#Then, the fastq file is aligned against the reference using bwa aln/samse algorithm.
+echo "##Starting the alignment."
+module load bwa/0.7.17
+#The -n option sets the maximum edit distance (1% of read length), while the -o the number of gap opens and -l is for the seed.
+	echo "##Starting bwa aln."
+	bwa aln -n 0.01 -o 2 -l 16500 $REFGEN /$SCRATCH/adremoved/$SAMPLE"_adrm.truncated.gz" > /$SCRATCH/aln/$SAMPLE"_aln.sai"
+	echo "##Finishing bwa aln and starting bwa samse."
+	bwa samse $REFGEN /$SCRATCH/aln/$SAMPLE"_aln.sai" /$SCRATCH/adremoved/$SAMPLE"_adrm.truncated.gz" > /$SCRATCH/aln/$SAMPLE"_aln.sam" 
+	echo "##Finishing bwa samse."
+module unload bwa/0.7.17
+echo "##Alignment finished."
+
+#Using samtools, the sam file is converted into a bam file, then is sorted and some statistics are calculated.
+module load samtools/1.9
+#The -h option includes headers in output, the -u outputs an uncompressed bam file and the -o sets the output name.
+	echo "##Starting sam to bam transformation."
+	samtools view -hu -o $SCRATCH/bam/$SAMPLE".bam" $SCRATCH/aln/$SAMPLE"_aln.sam"
+	echo "##Finished sam to bam transformation."
+#The -o option sets the output name.
+	echo "##Starting the bam file sorting."
+	samtools sort -o $SCRATCH/bam/$SAMPLE"_sorted.bam" $SCRATCH/bam/$SAMPLE".bam"
+	echo "##Finished the bam file sorting."
+#The output is redirected using '>'.
+	echo "##Starting the statistics calculation."
+	samtools stats $SCRATCH/bam/$SAMPLE"_sorted.bam" > $SCRATCH/bam/$SAMPLE"_sorted.stats"
+	echo "##Finished the statistics calculation."
+module unload samtools/1.9
+
+#Map damage is used to assess DNA degradation damage.
+echo "##Starting DNA damage assessment."
+module load mapDamage/2.2.0
+#The -i option recieves a BAM/SAM file with the alignment, the -r option recieves the reference in fasta format and the -d option sets the output folder.
+	mapDamage -d /$SCRATCH/map_damage/$SAMPLE -i /$SCRATCH/bam/$SAMPLE"_sorted.bam" -r $REFGEN
+module unload mapDamage/2.2.0
+echo "##Finished DNA damage assessment."
+
+############################################################################################################################
+#Until here was the first execution of the pipeline, and outputs and error files are in firstoutput and firtserror folders.#
+############################################################################################################################
+
+#CleanSam from gatk is used to fix wrong mapping qualities, that gave problems in future steps.
+echo "##Starting BAM cleaning."
+module load gatk/4.1.6
+#The -I option recieves the input file and -O recieves sets the output file.
+        gatk CleanSam -I $SCRATCH/bam/$SAMPLE"_sorted.bam" -O $SCRATCH/bam/$SAMPLE"_clean.bam"
+module unload gatk/4.1.6
+echo "##Finished BAM cleaning."
+
+#PICARD is used to add the read groups to the bam files.
+echo "##Starting read group addition."
+#The read group id is extracted from a previously created file containing the desired read group ids.
+ID=( $( cat $HOME/supplementary_files/readgroups_id.txt | grep $SAMPLE | cut -f 2 ) )
+module load picard/2.22.3
+#The -I option recieves the input file, the -O recieves the output file, and the rest of the variables receive the minumum required information to build read groups.
+	java -Xmx8g -jar $PICARDPATH/picard.jar AddOrReplaceReadGroups I=$SCRATCH/bam/$SAMPLE"_clean.bam" O=$SCRATCH/picard/$SAMPLE"_RG.bam" RGID=$ID RGLB=lib1 RGPL=Illumina RGPU=unit1 RGSM=$SAMPLE SORT_ORDER=coordinate
+module unload picard/2.22.3
+echo "##Finished read group addition."
+
+#Since the reference genome has a lot of unplaced scaffolds, only the autosomes+X+mito will be selected with Samtools view.
+#The next line has been used to create a BED file from the index file to use it in samtools view.
+#cat /projects/124-dogs/CanFam3.1.fa.fai | grep "^NC" | awk '{printf("%s\t0\t%s\n",$1,$2);}' > chr1_38_X_M.bed
+echo "##Starting placed chromosomes extraction."
+module load samtools/1.9
+#The -b option outputs in bam format, the -h option includes the header, the -L receives a bed file with the desired regions and the -o sets the output.
+        samtools view -b -h -L $HOME/supplementary_files/chr1_38_X_M.bed -o $SCRATCH/split/$SAMPLE"_placed.bam" $SCRATCH/picard/$SAMPLE"_RG.bam"
+module unload samtools/1.9
+echo "##Finished placed chromosomes extraction."
+
+###############################################################################################################################
+#Until here was the second execution of the pipeline, and outputs and error files are in secondoutput and seconderror folders.#
+###############################################################################################################################
+
+#Using GATK, the duplicate reads are marked.
+echo "##Starting mark duplicates."
+module load gatk/4.1.6
+#The -I option recieves the input file, the -O sets the output file, the -M sets the statistics output file. The last option, theoretically, allows parallelization.
+	gatk MarkDuplicatesSpark -I $SCRATCH/split/$SAMPLE"_placed.bam" -O $SCRATCH/duplicates_mrkd/$SAMPLE"_dupmrkd.bam" -M $SCRATCH/duplicates_mrkd/$SAMPLE"_metrics.txt" --conf 'spark.executor.cores=$SLURM_CPUS_PER_TASK'
+module unload gatk/4.1.6
+echo "##Finished mark duplicates."  
+
+############################################################################################################################
+#Until here was the third execution of the pipeline, and outputs and error files are in thirdoutput and thirderror folders.#
+############################################################################################################################
+
+#Then, two GATK tools are used to realign around InDels.
+echo "##Starting Realigner target creator."
+module load gatk/3.8.0
+#The -T recieves the tool, the -R recieves the reference, -I recieves the input fie, -known recieves the file with InDels and -o sets the output file.
+	java -jar /opt/rh7/GATK/GATK-3.8.0/GenomeAnalysisTK.jar -T RealignerTargetCreator -R $REFGEN -I $SCRATCH/duplicates_mrkd/$SAMPLE"_dupmrkd.bam" -known $SCRATCH/variants/final_indel.vcf -o $SCRATCH/indelreal/$SAMPLE".intervals"
+	echo "##Finished Realigner target creator and starting InDel realignment."
+#The -T recieves the tool, -R recieves the refrence, -I receives the input, -known recieves the file with InDels, -targetIntervals recieves the targets from the previous step and -o sets the output file.
+	java -jar /opt/rh7/GATK/GATK-3.8.0/GenomeAnalysisTK.jar -T IndelRealigner -R $REFGEN -I $SCRATCH/duplicates_mrkd/$SAMPLE"_dupmrkd.bam" -known $SCRATCH/variants/final_indel.vcf -targetIntervals $SCRATCH/indelreal/$SAMPLE".intervals" -o $SCRATCH/indelreal/$SAMPLE"_indelreal.bam"
+module unload gatk/3.8.0
+
+#The name of the index file is changed so it can be recognized by the next program.
+mv $SCRATCH/indelreal/$SAMPLE"_indelreal.bai" $SCRATCH/indelreal/$SAMPLE"_indelreal.bam.bai" 
+echo "##Finished InDel realignment."
+
+###############################################################################################################################
+#Until here was the fourth execution of the pipeline, and outputs and error files are in fourthoutput and fourtherror folders.#
+###############################################################################################################################
+
+#With the use of ATLAS, some programs are run with the objective of recalculate the qualities based on the damage of the DNA.
+module load atlas/0.9.9
+	echo "##Starting splitMerge."
+#First, a temporary file (containing RG id and sequencing cycle) is created for the splitMerge step.
+	grep $SAMPLE $HOME/supplementary_files/readgroups_id.txt | cut -f2-4 > $HOME/supplementary_files/$SAMPLE.tmp 
+#The task option sets the operation to be performed, bam receives the input file, out sets the output prefix and readGroupSettings receives the temporay file.
+	atlas task=splitMerge bam=$SCRATCH/indelreal/$SAMPLE"_indelreal.bam" out=$SCRATCH/atlas/$SAMPLE readGroupSettings=$HOME/supplementary_files/$SAMPLE.tmp
+	rm $HOME/supplementary_files/$SAMPLE.tmp
+	echo "##Finished splitMerge and starting PMD."
+#The task option sets the operation to be performed, bam receives the input file, out sets the output prefix and fasta receives the reference genome.
+	atlas task=PMD bam=$SCRATCH/atlas/$SAMPLE"_mergedReads.bam" out=$SCRATCH/atlas/$SAMPLE fasta=$REFGEN
+	echo "##Finished PMD and starting the subset of conserved reads."
+module unload atlas/0.9.9
+
+#Because Atlas is memory consuming, for the recal step only the reads that overlap the conserved regions will be used. The file is also indexed for recal.
+module load samtools/1.9 
+#The -b option indicates a bam output, -h keeps the header, -L receives the bed file with the conserved positions and -o sets the output.
+	samtools view -b -h -L $SCRATCH/variants/"final_gerp.bed" -o $SCRATCH/atlas/$SAMPLE"_conserved.bam" $SCRATCH/atlas/$SAMPLE"_mergedReads.bam"
+	samtools index $SCRATCH/atlas/$SAMPLE"_conserved.bam"
+	echo "##Finished subset of conserved reads."
+module unload samtools/1.9
+
+#Because of the memory problems of Atlas, recal and call (variant call) will be performed for each chromosome separately. 
+module load samtools/1.9
+module load atlas/0.9.9
+for CHR in $(cat < /home/orocabert/supplementary_files/chr_list.txt)
+do
+#First, the reads corresponding to specified chromosome will be subset and the new bam file will be indexed.
+	echo "##Starting bam file subset of chromosome "$CHR"."
+#The -b option outputs a bam file, -h keeps the header, -o sets the output; then comes the input file and finally the region of interest is specified.
+	samtools view -b -h -o $SCRATCH/atlas/$SAMPLE"_conserved_"$CHR".bam" $SCRATCH/atlas/$SAMPLE"_conserved.bam" $CHR
+#The command receives the input file.
+	samtools index $SCRATCH/atlas/$SAMPLE"_conserved_"$CHR".bam"
+#Then, the recalibration parameters based on the PMD damage are calculated using recal.
+	echo "##Finished subseting and starting recal with chromosome "$CHR"."
+#The task option sets the operation to be performed, bam receives the input file, pmdFile receives the pmd file, regions receives the file with conserved sites and out sets the output prefix.
+	atlas task=recal bam=$SCRATCH/atlas/$SAMPLE"_conserved_"$CHR".bam" pmdFile=$SCRATCH/atlas/$SAMPLE"_PMD_input_Empiric.txt" regions=$SCRATCH/variants/"final_gerp.bed" out=$SCRATCH/atlas/$SAMPLE"_"$CHR
+#Finally, the call of variants is perfomed using call.
+	echo "##Finished recal and starting variant call with chromosome "$CHR"."
+#The task option sets the operation to be performed, method the kind of variant call (MLE is based on Hofmanova), bam receives the input file, fasta the reference genome, infoFields and formatFields the columns of the output file, recal the recalibration parameters, pmdFile receives the pmd file and out sets the output file path. 
+	atlas task=call method=MLE bam=$SCRATCH/atlas/$SAMPLE"_conserved_"$CHR".bam" fasta=$REFGEN infoFields=DP formatFields=GT,AD,AB,AI,DP,GQ,PL recal=$SCRATCH/atlas/$SAMPLE"_"$CHR"_recalibrationEM.txt" pmdFile=$SCRATCH/atlas/$SAMPLE"_PMD_input_Empiric.txt" out=$SCRATCH/vcf/$SAMPLE"_"$CHR	
+#For merging the vcf files, the sample name has to be the same. Because Atlas's option sampleName does not work right now, it is performed manually using sed.
+	zcat $SCRATCH/vcf/$SAMPLE"_"$CHR"_MaximumLikelihood.vcf.gz" | sed "s/\/scratch.*/$SAMPLE/g" | gzip > $SCRATCH/vcf/$SAMPLE"_"$CHR".vcf.gz"
+	echo "##Finished variant call with chromosome "$CHR"."
+done
+module unload samtools/1.9
+module unload atlas/0.9.9
+
+############################################################################################################################
+#Until here was the fifth execution of the pipeline, and outputs and error files are in fifthoutput and fiftherror folders.#
+############################################################################################################################
+
+#The original vcf files are removed.
+rm $SCRATCH/vcf/$SAMPLE*Max*.vcf.gz
+
+echo "##Starting vcf merging."
+#Once the vcf file for each chromosome has been produced, they are merged. Only the autosomes will be merged, since the X and the mitochondrial have a different behaviour.
+#A temproary list of the files to be merged is created to be used with MergeVcfs.
+ls $SCRATCH/vcf/ | grep "$SAMPLE.*.vcf.gz" | head -n 39 | tail -n +2 > $SCRATCH/vcf/$SAMPLE"_vcf.list"
+module load picard/2.22.3
+	cd $SCRATCH/vcf
+        #The D option receives the sequence dictionary, I receives the list of vcf files to merge and O sets the output file name.
+	java -jar $PICARDPATH/picard.jar MergeVcfs D=$PROJECTS/CanFam3.1.dict I=$SCRATCH/vcf/$SAMPLE"_vcf".list O=$SCRATCH/vcf/$SAMPLE".vcf.gz"
+	cd $HOME
+	#The temporary list is deleted.
+	rm $SCRATCH/vcf/$SAMPLE"_vcf.list"
+module unload picard/2.22.3
+echo "##Finished vcf files merging."
+
+#For the first 17 samples, the chromosome nomenclature was changed using the following code. For the next samples this section is not needed.
+#For each line in the dictionary that contains the chromosome names relationship...
+#for LINE in $(cat < /home/orocabert/supplementary_files/chr_dictionary.txt)
+#do
+#The original and the converted names are extracted.
+#	FROM=( $( echo $LINE | cut -d":" -f2 ) )
+#	TO=( $( echo $LINE | cut -d":" -f1 ) )
+#	echo "Using file" $PREV "to pass from" $FROM "to" $TO
+#The first and last conversion are done sepparately so correctly set the first input and last output.
+#	if [ $FROM == "NC_006583.3" ] || [ $FROM == "NC_006621.3" ]
+#	then
+#		if [ $FROM == "NC_006583.3" ]
+#		then
+#			zcat $SCRATCH/vcf/$SAMPLE".vcf.gz" | sed "s/\<$FROM\>/$TO/g" > $SCRATCH/vcf/$SAMPLE"_"$FROM"_tmp.vcf"
+#		else
+#			sed "s/\<$FROM\>/$TO/g" $SCRATCH/vcf/$SAMPLE"_"$PREV"_tmp.vcf" > $SCRATCH/vcf/$SAMPLE"_"$FROM"_tmp.vcf"
+#		fi
+#The rest of the conversions are done with this line.
+#	else
+#		sed "s/\<$FROM\>/$TO/g" $SCRATCH/vcf/$SAMPLE"_"$PREV"_tmp.vcf" > $SCRATCH/vcf/$SAMPLE"_"$FROM"_tmp.vcf"
+#	fi
+#The name of the output file in this iteration is stored and will be used as input name in the next iteration.
+#	PREV=$FROM
+#done
+#The conversion of the mitochondrial is done separately. It is also done uwing bgzip so that bcftools can work with them.
+#module load samtools/1.9
+#sed "s/\<NC_002008.4\>/chrM/g" $SCRATCH/vcf/$SAMPLE"_"$PREV"_tmp.vcf" > $SCRATCH/vcf/$SAMPLE"_final.vcf"
+#bgzip $SCRATCH/vcf/$SAMPLE"_final.vcf"
+#module unload samtools/1.9
+#
+#The temporary files created in the conversion are deleted.
+#rm $SCRATCH/vcf/$SAMPLE*tmp.vcf
+#rm $SCRATCH/vcf/$SAMPLE".vcf.gz" $SCRATCH/vcf/$SAMPLE".vcf.gz.tbi"
+#mv $SCRATCH/vcf/$SAMPLE"_final.vcf.gz" $SCRATCH/vcf/$SAMPLE".vcf.gz"
+
+###########################################################################################################################
+#Until here was the sixth execution of the pipeline, and output and error files are in sixthoutput and sixtherror folders.#
+###########################################################################################################################
+
+#Finally, the mitochondrial variant call is done with GATK, with a previous calculation of the coverage using samtools bedcov.
+module load samtools/1.9
+#The per-base read depth is calculated using bedcov, supplying a temporary bed file with the region, the input bam file and redirecting to the output.
+	echo "##Starting the mitochondrial coverage assesment." 
+	tail -n 1 $HOME/supplementary_files/chr1_38_X_M.bed > $HOME/supplementary_files/$SAMPLE"_mito.txt"
+	samtools bedcov $HOME/supplementary_files/$SAMPLE"_mito.txt" $SCRATCH/indelreal/$SAMPLE"_indelreal.bam" >> $HOME/supplementary_files/$SAMPLE"_mito.txt"
+	PER_BASE_DEPTH=$( ( tail -n 1 $HOME/supplementary_files/$SAMPLE"_mito.txt" | cut -f 4 ) )
+	LENGTH=$( ( tail -n 1 $HOME/supplementary_files/$SAMPLE"_mito.txt" | cut -f 3 ) )
+	MITO_COV=$(echo "$PER_BASE_DEPTH/$LENGTH" | bc -l)
+	rm $HOME/supplementary_files/$SAMPLE"_mito.txt"
+	echo "##Finished the mitochondrial coverage assesment."
+module unload samtools/1.9
+
+#Then, the variant call and filter are performed using Mutect2 from GATK only if the coverage is greater than 45.
+if (( $(echo "$MITO_COV > 45" | bc -l) )); 
+then 
+	echo "##There is enough coverage ("$MITO_COV") to perform the mitochondrial variant call."
+	module load gatk/4.1.6
+		echo "##Starting mitochondrial variant call."
+#The -R option receives the reference genome, -L receives the mitocondrial region, --mitochondria will set specific parameters, -I receives the input file and -O sets the output file.
+#NOTE: for the first 17 samples, the output file will have the chromosome notation of "NC_" instead of "chrM".
+		gatk Mutect2 -R $REFGEN -L NC_002008.4 --mitochondria-mode true -I $SCRATCH/indelreal/$SAMPLE"_indelreal.bam" -O $SCRATCH/vcf/$SAMPLE"_mito.vcf.gz"
+		echo "##Finished mitochondrial variant call and starting filter."
+#The -R option receives the reference genome, -V receives the input file, --mitochondria-mode sets specific parameters for mitochondria and -O sets the output file. 
+		gatk FilterMutectCalls -R $REFGEN -V $SCRATCH/vcf/$SAMPLE"_mito.vcf.gz" --mitochondria-mode true -O $SCRATCH/vcf/$SAMPLE"_mito_filtered.vcf.gz" 
+		echo "##Finished filter."
+	module unload gatk/4.1.6
+else 
+	echo "##There is not enough coverage ("$MITO_COV") to perform the mitochondrial variant call."
+fi
+
+echo "##Pipieline finished. All output files have been sent to their respective folders. Thank you for your patience!"
+
+#################################################################################################################################
+#Until here was the seventh execution of the pipeline, and output and error files are in seventhoutput and seventherror folders.#
+#################################################################################################################################
+
+
+
+: <<'END'
+#In case some problem arises, validateSamFile is a very usefult tool.
+echo "##Validation of bam file"
+module load picard/2.22.3
+        java -jar $PICARDPATH/picard.jar ValidateSamFile I="input_file" IGNORE_WARNINGS=true MODE=VERBOSE
+module unload picard/2.22.3
+echo "##Finished validations of bam file"
+END

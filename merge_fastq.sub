@@ -1,0 +1,37 @@
+#!/bin/bash -x
+#
+#SBATCH --job-name="mergefq"
+#SBATCH --account=lbotigue_V6435
+#SBATCH --cpus-per-task=2
+#SBTACH --mem=16G
+#SBATCH --mail-type=END
+#SBATCH --mail-user=oriol.rocabert@cragenomica.es
+#SBATCH --output=/home/orocabert/%j.out
+#SBATCH --error=/home/orocabert/%j.err
+#
+
+#####################################################################################################################################
+#The objective of this bash script is to merge the fastq files obtained from the sequencing center whose names are passed in a file.#
+#It has to be launched using slurm since it is a bit computationally expensive.							    						#
+#It is launched as: sbatch merge.sub supplementary_files/index_info.txt								    							# 
+#####################################################################################################################################
+
+#Some paths are set.
+HOME=/home/orocabert
+PROJECTS=/projects/124-dogs
+SCRATCH=/scratch/124-dogs
+REFGEN=$PROJECTS/CanFam3.1.fa
+
+#The output folder is created
+mkdir $SCRATCH/merged
+
+#For every sample in the supplied file...
+for LINE in $(cat < $1 | grep -v "^#")
+do
+        SAMPLE=( $( echo $LINE | cut -d"," -f1 ) )
+        P7INDEX=( $( echo $LINE | cut -d"," -f2 ) )
+	P5INDEX=( $( echo $LINE | cut -d"," -f5 ) )
+        echo "Sample" $SAMPLE "has p7" $P7INDEX "and p5" $P5INDEX
+	cat $PROJECTS/*1_$P7INDEX-$P5INDEX5*.fastq.gz $PROJECTS/*2_$P7INDEX-$P5INDEX5*.fastq.gz > $SCRATCH/merged/$SAMPLE".fastq.gz"
+	wc -l $PROJECTS/*1_$P7INDEX-$P5INDEX5*.fastq.gz $PROJECTS/*2_$P7INDEX-$P5INDEX5*.fastq.gz $SCRATCH/merged/$SAMPLE".fastq.gz"
+done

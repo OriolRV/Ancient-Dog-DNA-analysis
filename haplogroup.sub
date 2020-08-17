@@ -1,0 +1,50 @@
+#!/bin/bash -x
+#
+#SBATCH --job-name="mitohaplo"
+#SBATCH --account=lbotigue_V6435
+#SBATCH --cpus-per-task=1
+#SBTACH --mem=10G
+#SBATCH --mail-type=END
+#SBATCH --mail-user=oriol.rocabert@cragenomica.es
+#SBATCH --output=/scratch/124-dogs/haplo/%j.out
+#SBATCH --error=/scratch/124-dogs/haplo/%j.err
+#
+
+####################################################################################
+#The objective of this script is to perform the mitochondrial haplogroup analysis. #
+#It has to be executed using slurm because it is computationally expensive.	       #
+#It is launched as: sbatch haplogroup.sub supplementary_files/samplelist.txt	   #
+####################################################################################
+
+#Some paths are set.
+SCRATCH=/scratch/124-dogs
+HOME=/home/orocabert
+PROJECTS=/projects/124-dogs
+REFGEN=$PROJECTS/CanFam3.1.fa
+
+#First, the previous used mitochondrial sequences are added to the final fasta document.
+cat $HOME/supplementary_files/thalmann_HXH_CTC.fa > $SCRATCH/haplo/thalmann_HXH_CTC_17a.fa
+
+#Secondly, the ancient vcf files are converted into fasta sequences and merged into the same file.
+module load gatk/4.1.6
+	for SAMPLE in $(cat < $1)
+	do
+		echo "##Starting mitochondrial vcf to fa conversion for sample "$SAMPLE"."
+		gatk FastaAlternateReferenceMaker -R $REFGEN -V $SCRATCH/vcf/$SAMPLE"_mito_filtered.vcf.gz" -L NC_002008.4 -O $SCRATCH/haplo/$SAMPLE".fa"
+		sed -i "s/>1 NC_002008.4:1-16727/>$SAMPLE/g" $SCRATCH/haplo/$SAMPLE".fa"	
+		cat $SCRATCH/haplo/$SAMPLE".fa" >> $SCRATCH/haplo/thalmann_HXH_CTC_17a.fa
+	done
+module unload gatk/4.1.6
+
+#Then alignment is performed with Mega7 in the pc with muscle normal and default parameters.
+
+#Next, the N, n and - characters are removed using a python script, as well as the transversions using another one.
+module load python/3.8.0
+	echo "##Starting removal of Nn-."
+	python $HOME/cleanAln_nN-.py $SCRATCH/haplo/thalmann_HXH_CTC_17a_aln.fas $SCRATCH/haplo/thalmann_HXH_CTC_17a_clean1.fas
+#If transversions are removed, the tree does not have enough power.
+	#echo "##Starting removal of transversions."
+	#python $HOME/clean-ancient-fasta.py $SCRATCH/haplo/thalmann_HXH_CTC_17a_clean2.fas $SCRATCH/haplo/thalmann_HXH_CTC_17a_clean2.fas
+module unload python/3.8.0
+
+#Finally, using megaX, a NJ tree was performed using Maximum Composite Likelihood and 1000 Bootstrap repetitions.

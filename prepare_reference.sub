@@ -1,0 +1,48 @@
+#!/bin/bash -x
+#
+#SBATCH --job-name="Prep_ref"
+#SBATCH --account=lbotigue_V6435
+#SBATCH --cpus-per-task=2
+#SBTACH --mem=16G
+#SBATCH --mail-type=END
+#SBATCH --mail-user=oriol.rocabert@cragenomica.es
+#SBATCH --output=/scratch/124-dogs/output/preparePrep_ref.out
+#SBATCH --error=/scratch/124-dogs/error/preparePrep_ref.err
+#
+
+##########################################################################################
+#The objective of this script is to prepare the fasta reference genome for the analysis. #
+#It as to be used with slurm since it is computationally expensive.			 			 #
+#It is launched as: sbatch prepare_reference.sub					 					 #
+##########################################################################################
+
+HOME=/home/orocabert
+PROJECTS=/projects/124-dogs
+SCRATCH=/scratch/124-dogs
+REFGEN=$PROJECTS/CanFam3.1.fa
+
+#Using bwa, the fasta file is indexed.
+echo "##Starting the indexing process."
+module load bwa/0.7.17
+#The -a option allows choosing the algorithm for the indexing.
+	bwa index -a bwtsw $REFGEN
+        echo "##Index done."
+module unload bwa/0.7.17
+
+#Using picard, the fasta file dictionary is created.
+echo "##Starting creation reference dictionary."
+module load picard/2.22.3
+#The program is called with the typical java format, then the tool is selected and R recieves the fasta reference genome.
+	java -Xmx16g -jar $PICARDPATH/picard.jar CreateSequenceDictionary R=$REFGEN
+	echo "##Dictionary done."
+module unload picard/2.22.3
+
+#Using samtools, another index is created.
+echo "##Starting creation of the second index."
+module load samtools/1.9
+#The faidx command creates the index.
+	samtools faidx $REFGEN
+	echo "##Second index done."
+module unload samtools/1.9
+
+echo "##Finished the reference prepatation."

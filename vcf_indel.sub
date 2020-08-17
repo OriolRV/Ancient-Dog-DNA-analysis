@@ -1,0 +1,69 @@
+#!/bin/bash -x
+#
+#SBATCH --job-name="vcf_indel"
+#SBATCH --account=lbotigue_V6435
+#SBATCH --cpus-per-task=1
+#SBTACH --mem=20G
+#SBATCH --mail-type=END
+#SBATCH --mail-user=oriol.rocabert@cragenomica.es
+#SBATCH --output=/scratch/124-dogs/variants/%j.out
+#SBATCH --error=/scratch/124-dogs/variants/%j.err
+#
+
+#################################################################################################################################################
+#This script allows to preprocess the huge vcf file (downloaded from: https://research.nhgri.nih.gov/dog_genome/data_release/index.shtml)	    #
+#to obtain a vcf with indels. It also allows to change the names of the chromosomes, from "chrNUMBER" notation to "NC_NUMBER" notation (although#
+#this was just done once with the first 17 samples, and now there's and "exit" command before).													#
+#It has to be launched using slurm, since it is computationally expensive.																		#
+#It is launched as: sbatch vcf_indel.sub																										#
+#################################################################################################################################################
+
+
+#First, the file is downloaded in a new folder (md5sum hash: 637756c5cc455e03a26d67ab39577780).
+mkdir /scratch/124-dogs/variants
+cd /scratch/124-dogs/variants
+wget ftp://ftp.nhgri.nih.gov/pub/outgoing/dog_genome/WGS/722g.990.SNP.INDEL.chrAll.vcf.gz
+module load gatk/4.1.6
+#Then, the vcf file is indexed with IndexFeatureFile, where -I receives the input vcf file.
+	echo "##VCF file indexing."
+	gatk IndexFeatureFile -I /scratch/124-dogs/variants/722g.990.SNP.INDEL.chrAll.vcf.gz
+#Next, indels are extracted with SelectVariants, where -V recieves the same input vcf file as before, -O the output file and indels are the selected variant.
+	echo "##Indel extraction."
+	gatk SelectVariants -V /scratch/124-dogs/variants/722g.990.SNP.INDEL.chrAll.vcf.gz --select-type-to-include INDEL -O /scratch/124-dogs/variants/indel.vcf
+module unload gatk/4.1.6
+END
+
+exit
+#For the first 17 samples, the chromosome nomenclature was changed using the following code.
+#For each line in the dictionary that contains the chromosome names relationship...
+for LINE in $(cat < /home/orocabert/supplementary_files/chr_dictionary.txt)
+do
+#The original and the converted names are extracted.
+	FROM=( $( echo $LINE | cut -d":" -f1 ) )
+	TO=( $( echo $LINE | cut -d":" -f2 ) )
+	echo "##Using file" $PREV "to pass from" $FROM "to" $TO"."
+#The first and last conversion are done sepparately so correctly set the first input and last output.
+	if [ $FROM == "chr1" ] || [ $FROM == "chrX" ]
+	then
+		if [ $FROM == "chr1" ]
+		then
+			sed "s/\<$FROM\>/$TO/g" /scratch/124-dogs/variants/indel.vcf > /scratch/124-dogs/variants/$FROM"_tmp.vcf"
+		else
+			sed "s/\<$FROM\>/$TO/g" /scratch/124-dogs/variants/$PREV"_tmp.vcf" > /scratch/124-dogs/variants/final_indel.vcf
+		fi
+#The rest of the conversions are done with this line.
+	else
+		sed "s/\<$FROM\>/$TO/g" /scratch/124-dogs/variants/$PREV"_tmp.vcf" > /scratch/124-dogs/variants/$FROM"_tmp.vcf"
+	fi
+#The name of the output file in this iteration is stored and will be used as input name in the next iteration.
+	PREV=$FROM
+done
+#The temporary files created in the conversion are deleted.
+rm /scratch/124-dogs/variants/*tmp.vcf
+END
+
+#Optionally, the resulting files can be compressed to reduce the needed storage memory.
+echo "##Compressing indel.vcf"
+gzip /scratch/124-dogs/variants/indel.vcf
+echo "##Compressing final_indel.vcf"
+gzip /scratch/124-dogs/variants/final_indel.vcf

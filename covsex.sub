@@ -1,0 +1,61 @@
+#!/bin/bash -x
+#
+#SBATCH --job-name="covsx"
+#SBATCH --account=lbotigue_V6435
+#SBATCH --cpus-per-task=1
+#SBTACH --mem=20G
+#SBATCH --mail-type=END
+#SBATCH --mail-user=oriol.rocabert@cragenomica.es
+#SBATCH --output=/scratch/124-dogs/sex/%j.out
+#SBATCH --error=/scratch/124-dogs/sex/%j.err
+#
+
+######################################################################################################
+#The objective of this script is to determine the sex of the dogs based on the sequencing coverages. #
+#It has to be executed using slurm because it is computationally expensive.			     			 #
+#It is launched as: sbatch covsex.sub supplementary_files/samplelist.txt.		             		 #
+######################################################################################################
+
+#Set paths
+SCRATCH=/scratch/124-dogs
+HOME=/home/orocabert
+
+echo "##Starting sex identification."
+#Create otuput folder.
+#mkdir $SCRATCH/sex
+
+#The header of the table is echoed.
+echo -e "#Sample\tF-statistic\tp-value of F\tRx\tConfidence Interval\tSex" > $HOME/other_results/sex_table.txt
+
+#For every sample in the supplied file...
+for SAMPLE in $(cat < $1)
+do
+	echo "##"$SAMPLE"."
+	module load samtools/1.9
+		echo "##Extracting reads."
+		#Reads that are not unmapped, not primary or duplicates, and have a MAPQ equal or greatet than 30 are selected.
+		samtools view -F 1284 -q 30 -b $SCRATCH/indelreal/$SAMPLE"_indelreal.bam" > $SCRATCH/sex/$SAMPLE"_sex.bam"
+		echo "##Indexing bam file."
+		#Then, the file is indexed.
+		samtools index $SCRATCH/sex/$SAMPLE"_sex.bam"
+		echo "##Extracting statistics."
+		#Next, the statistics are calculated.
+		samtools idxstats $SCRATCH/sex/$SAMPLE"_sex.bam" > $SCRATCH/sex/$SAMPLE.idxstats
+	module unload samtools/1.9
+	module load R/3.5.3
+		echo "##Calculating Rx."
+		#Using R and the script Rx_identifier.r, the sex is tested.
+		Rscript $HOME/Rx_identifier.r $SAMPLE > $SCRATCH/sex/$SAMPLE".Rx"
+	module unload R/3.5.3
+	#The results are extracted from the output and printed into the sex table.
+	F=$( (grep "^F-statistic" $SCRATCH/sex/$SAMPLE".Rx" | cut -d":" -f2 | grep -o "^ [0-9]*.[0-9]*" | sed 's/^ *//') )
+	P=$( (grep "^F-statistic" $SCRATCH/sex/$SAMPLE".Rx" | sed 's/^.*:.*: //') )
+	R=$( (grep "Rx" $SCRATCH/sex/$SAMPLE".Rx" | cut -d" " -f3) )
+	C=$( (grep "CI" $SCRATCH/sex/$SAMPLE".Rx" | cut -d" " -f4-5) )
+	S=$( (tail -n 2 $SCRATCH/sex/$SAMPLE".Rx" | head -n 1 | cut -d'"' -f2 | cut -d":" -f2) )
+	echo -e "$SAMPLE\t$F\t$P\t$R\t$C\t$S" >> $HOME/other_results/sex_table.txt
+done
+
+#Finally, all the output files except the .Rx are deleted.
+rm $SCRATCH/sex/*.idxstats $SCRATCH/sex/*.bam*
+echo "##Finished sex identification."

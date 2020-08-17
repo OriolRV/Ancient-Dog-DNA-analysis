@@ -1,0 +1,47 @@
+#!/bin/bash -x
+#
+#SBATCH --job-name="mergevcf"
+#SBATCH --account=lbotigue_V6435
+#SBATCH --cpus-per-task=1
+#SBTACH --mem=10G
+#SBATCH --mail-type=END
+#SBATCH --mail-user=oriol.rocabert@cragenomica.es
+#SBATCH --output=/scratch/124-dogs/vcf/%j.out
+#SBATCH --error=/scratch/124-dogs/vcf/%j.err
+#
+
+###############################################################################
+#The objective of this script is to merge the individual vcf files into one.  #
+#It has to be executed using slurm because it is a computanionally expensive. #
+#It is launched as: sbatch merge_vcf.sub				      				  #
+###############################################################################
+
+#Some paths ae set.
+SCRATCH=/scratch/124-dogs; HOME=/home/orocabert
+
+echo "##Starting vcf file merging."
+#First, a temporary list containing the files to be merged is created.
+ls $SCRATCH/vcf/ | grep -vE "NC|tbi|err|out|txt|ancient" > $SCRATCH/vcf/sample_vcf_list.txt
+
+cd $SCRATCH/vcf
+
+#Then, the environment containing bcftools is activated.
+module load conda/2-4.3.21
+	source activate bcftools-uri
+#The files are indexed so that bcftools can merge them.
+	for FILE in $(cat < $SCRATCH/vcf/sample_vcf_list.txt)
+	do	
+		echo "##Creating index for "$FILE"."
+		bcftools index $FILE
+	done
+#Then, the files are merged. The -l option receives the temprorary list, -O sets the type of output and -o sets the output path.
+	echo "##Merging files."
+	bcftools merge -l $SCRATCH/vcf/sample_vcf_list.txt -O z -o $SCRATCH/vcf/ancient_samples.vcf.gz
+	source deactivate bcftools-uri
+module unload conda/2-4.3.21
+echo "##Finished vcf file merging."
+
+#The temproray list is removed.
+rm $SCRATCH/vcf/sample_vcf_list.txt
+
+cd $HOME
