@@ -116,7 +116,7 @@ echo "##Finished the addition of fake rsid."
 echo "##Starting the addition of the population information."
 rm $SCRATCH/pca/tmpads.ped
 IFS=$'\n'
-for LINE in $(cat < $HOME/supplementary_files/pop_spc_mod.txt)
+for LINE in $(cat < $HOME/supplementary_files/pop_spc.txt)
 do
 	ID=$( ( echo $LINE | cut -f 1 ) )
 	POP=$( ( echo $LINE | cut -f 2 ) )
@@ -127,7 +127,7 @@ mv $SCRATCH/pca/newads.ped $SCRATCH/pca/olditod.ped
 mv $SCRATCH/pca/tmpads.ped $SCRATCH/pca/newads.ped
 rm $SCRATCH/pca/tmpadws.ped
 IFS=$'\n'
-for LINE in $(cat < $HOME/supplementary_files/pop_spc_mod.txt)
+for LINE in $(cat < $HOME/supplementary_files/pop_spc.txt)
 do
 	ID=$( ( echo $LINE | cut -f 1 ) )
 	POP=$( ( echo $LINE | cut -f 2 ) )
