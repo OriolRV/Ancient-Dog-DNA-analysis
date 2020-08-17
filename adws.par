@@ -1,0 +1,11 @@
+genotypename: /scratch/124-dogs/pca/newadws.ped
+snpname:      /scratch/124-dogs/pca/newadws.pedsnp
+indivname:    /scratch/124-dogs/pca/newadws.pedind
+evecoutname:  /scratch/124-dogs/pca/newadws.egve
+evaloutname:  /scratch/124-dogs/pca/newadws.egva
+outlieroutname: /scratch/124-dogs/pca/newadws.otl
+outliermode: 2
+poplistname: /home/orocabert/supplementary_files/populations.txt
+numchrom: 38
+numthreads: 4
+lsqproject: YES

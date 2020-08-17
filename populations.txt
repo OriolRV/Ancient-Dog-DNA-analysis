@@ -1,0 +1,6 @@
+Africa
+Asia
+Europe
+North_America
+Oceania
+Unknown
