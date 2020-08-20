@@ -18,7 +18,6 @@
 #It is launched as: sbatch vcf_indel.sub																										#
 #################################################################################################################################################
 
-
 #First, the file is downloaded in a new folder (md5sum hash: 637756c5cc455e03a26d67ab39577780).
 mkdir /scratch/124-dogs/variants
 cd /scratch/124-dogs/variants
@@ -31,7 +30,6 @@ module load gatk/4.1.6
 	echo "##Indel extraction."
 	gatk SelectVariants -V /scratch/124-dogs/variants/722g.990.SNP.INDEL.chrAll.vcf.gz --select-type-to-include INDEL -O /scratch/124-dogs/variants/indel.vcf
 module unload gatk/4.1.6
-END
 
 exit
 #For the first 17 samples, the chromosome nomenclature was changed using the following code.
@@ -60,7 +58,6 @@ do
 done
 #The temporary files created in the conversion are deleted.
 rm /scratch/124-dogs/variants/*tmp.vcf
-END
 
 #Optionally, the resulting files can be compressed to reduce the needed storage memory.
 echo "##Compressing indel.vcf"
