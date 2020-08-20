@@ -12,7 +12,7 @@
 
 ##########################################################################################
 #The objective of this script is to prepare the fasta reference genome for the analysis. #
-#It as to be used with slurm since it is computationally expensive.			 			 #
+#It has to be used with slurm since it is computationally expensive.			 			 #
 #It is launched as: sbatch prepare_reference.sub					 					 #
 ##########################################################################################
 
